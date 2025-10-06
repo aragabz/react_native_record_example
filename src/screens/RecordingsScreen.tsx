@@ -9,6 +9,8 @@ import {
   Alert,
   Platform,
   PermissionsAndroid,
+  Dimensions,
+  Modal,
 } from 'react-native';
 import * as RNFS from 'react-native-fs';
 import Sound, {
@@ -36,10 +38,19 @@ const RecordingsScreen = () => {
   const [currentRecordingPath, setCurrentRecordingPath] = useState<string | null>(null);
   const [currentlyPlayingId, setCurrentlyPlayingId] = useState<string | null>(null);
   const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
+  const [isRecordingSheetVisible, setIsRecordingSheetVisible] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState('00:00');
   
   // Animation values
   const buttonScale = useRef(new Animated.Value(1)).current;
   const buttonRotation = useRef(new Animated.Value(0)).current;
+  const sheetAnimation = useRef(new Animated.Value(0)).current;
+  
+  // Timer reference
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Get screen dimensions
+  const { height } = Dimensions.get('window');
   
   // Request recording permissions
   const requestPermissions = async () => {
@@ -65,6 +76,27 @@ const RecordingsScreen = () => {
       }
     }
     return true; // iOS handles permissions through Info.plist
+  };
+  
+  // Show recording sheet
+  const showRecordingSheet = () => {
+    setIsRecordingSheetVisible(true);
+    Animated.timing(sheetAnimation, {
+      toValue: 1,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  };
+  
+  // Hide recording sheet
+  const hideRecordingSheet = () => {
+    Animated.timing(sheetAnimation, {
+      toValue: 0,
+      duration: 300,
+      useNativeDriver: true,
+    }).start(() => {
+      setIsRecordingSheetVisible(false);
+    });
   };
   
   // Start recording function
@@ -96,6 +128,23 @@ const RecordingsScreen = () => {
       setIsRecording(true);
       setCurrentRecordingPath(recordingPath);
       setRecordingStartTime(Date.now());
+      setRecordingDuration('00:00');
+      
+      // Start timer to update duration
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+      
+      const startTime = Date.now();
+      setRecordingStartTime(startTime);
+      
+      timerRef.current = setInterval(() => {
+        const duration = Date.now() - startTime;
+        setRecordingDuration(formatTime(duration));
+      }, 500);
+      
+      // Show the recording sheet
+      showRecordingSheet();
       
       // Start animation
       startPulseAnimation();
@@ -124,6 +173,18 @@ const RecordingsScreen = () => {
       const result = await Sound.stopRecorder();
       setIsRecording(false);
       
+      // Save the current duration before clearing the timer
+      const finalDuration = recordingDuration;
+      
+      // Clear the timer
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      
+      // Hide the recording sheet
+      hideRecordingSheet();
+      
       // Stop animation
       Animated.timing(buttonScale, {
         toValue: 1,
@@ -131,13 +192,9 @@ const RecordingsScreen = () => {
         useNativeDriver: true,
       }).start();
       
-      // Calculate actual recording duration based on start time
-      let duration = '00:00';
-      if (recordingStartTime) {
-        const recordingDuration = Date.now() - recordingStartTime;
-        duration = formatTime(recordingDuration);
-        setRecordingStartTime(null);
-      }
+      // Use the saved duration value
+      let duration = finalDuration;
+      setRecordingStartTime(null);
       
       // Add the recording to the list
       const newRecording: RecordingItem = {
@@ -203,6 +260,12 @@ const RecordingsScreen = () => {
   
   // Animation for the recording button
   const startPulseAnimation = () => {
+    // Stop any existing animation
+    buttonScale.stopAnimation();
+    
+    // Reset to initial value
+    buttonScale.setValue(1);
+    
     Animated.loop(
       Animated.sequence([
         Animated.timing(buttonScale, {
@@ -309,15 +372,19 @@ const RecordingsScreen = () => {
     outputRange: ['0deg', '45deg'],
   });
   
+  // Calculate sheet translation based on animation value
+  const sheetTranslateY = sheetAnimation.interpolate({
+    inputRange: [0, 1],
+    outputRange: [height, 0],
+  });
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Recordings</Text>
       
-      {isLoading && (
+      {isLoading && !isRecording && (
         <View style={styles.loadingOverlay}>
-          <Text style={styles.loadingText}>
-            {isRecording ? 'Recording...' : 'Processing...'}
-          </Text>
+          <Text style={styles.loadingText}>Processing...</Text>
         </View>
       )}
       
@@ -354,6 +421,39 @@ const RecordingsScreen = () => {
           <View style={isRecording ? styles.stopIcon : styles.recordIcon} />
         </TouchableOpacity>
       </Animated.View>
+      
+      {/* Recording Sheet */}
+      {isRecordingSheetVisible && (
+        <View style={styles.sheetOverlay}>
+          <Animated.View 
+            style={[
+              styles.recordingSheet,
+              { transform: [{ translateY: sheetTranslateY }] }
+            ]}
+          >
+            <View style={styles.sheetHandle} />
+            
+            <View style={styles.recordingContent}>
+              <View style={styles.waveformContainer}>
+                <View style={styles.waveform} />
+              </View>
+              
+              <Text style={styles.recordingTime}>
+                {recordingDuration}
+              </Text>
+              
+              <View style={styles.recordingControls}>
+                <TouchableOpacity 
+                  style={styles.stopRecordingButton}
+                  onPress={stopRecording}
+                >
+                  <View style={styles.stopRecordingIcon} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Animated.View>
+        </View>
+      )}
     </View>
   );
 };
@@ -384,6 +484,75 @@ const styles = StyleSheet.create({
   },
   listContainer: {
     paddingBottom: 100, // Space for FAB
+  },
+  // Recording sheet styles
+  sheetOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+    zIndex: 1000,
+  },
+  recordingSheet: {
+    backgroundColor: 'white',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    height: 300,
+    padding: 20,
+    alignItems: 'center',
+  },
+  sheetHandle: {
+    width: 40,
+    height: 5,
+    backgroundColor: '#ddd',
+    borderRadius: 3,
+    marginBottom: 20,
+  },
+  recordingContent: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flex: 1,
+  },
+  waveformContainer: {
+    width: '100%',
+    height: 100,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  waveform: {
+    width: '100%',
+    height: 60,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 10,
+  },
+  recordingTime: {
+    fontSize: 48,
+    fontWeight: 'bold',
+    color: '#333',
+    marginVertical: 20,
+  },
+  recordingControls: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  stopRecordingButton: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    backgroundColor: '#ff4c4c',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stopRecordingIcon: {
+    width: 30,
+    height: 30,
+    backgroundColor: 'white',
+    borderRadius: 5,
   },
   recordingItem: {
     backgroundColor: 'white',

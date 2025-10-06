@@ -9,6 +9,7 @@ import { NewAppScreen } from '@react-native/new-app-screen';
 import { StatusBar, StyleSheet, useColorScheme, View } from 'react-native';
 import {
   SafeAreaProvider,
+  SafeAreaView,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
 import RecordingsScreen from './src/screens/RecordingsScreen';
@@ -29,7 +30,11 @@ function AppContent() {
 
   return (
     <View style={styles.container}>
+      <SafeAreaView style={{
+        flex: 1
+      }}>
       <RecordingsScreen />
+      </SafeAreaView>
     </View>
   );
 }
