@@ -46,8 +46,14 @@ const RecordingsScreen = () => {
   const buttonRotation = useRef(new Animated.Value(0)).current;
   const sheetAnimation = useRef(new Animated.Value(0)).current;
   
+  // Waveform animation values
+  const waveformValues = useRef(
+    Array.from({ length: 30 }, () => new Animated.Value(0))
+  ).current;
+  
   // Timer reference
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const waveAnimationRef = useRef<NodeJS.Timeout | null>(null);
   
   // Get screen dimensions
   const { height } = Dimensions.get('window');
@@ -182,6 +188,9 @@ const RecordingsScreen = () => {
         timerRef.current = null;
       }
       
+      // Stop waveform animation
+      stopWaveformAnimation();
+      
       // Hide the recording sheet
       hideRecordingSheet();
       
@@ -286,6 +295,45 @@ const RecordingsScreen = () => {
       duration: 300,
       useNativeDriver: true,
     }).start();
+    
+    // Animate waveform bars
+    animateWaveform();
+  };
+  
+  // Animate waveform bars
+  const animateWaveform = () => {
+    // Clear any existing animation
+    if (waveAnimationRef.current) {
+      clearInterval(waveAnimationRef.current);
+    }
+    
+    // Animate each bar with random heights
+    waveAnimationRef.current = setInterval(() => {
+      waveformValues.forEach((value) => {
+        Animated.timing(value, {
+          toValue: Math.random() * 40 + 5,
+          duration: 300,
+          useNativeDriver: false,
+        }).start();
+      });
+    }, 300);
+  };
+  
+  // Stop waveform animation
+  const stopWaveformAnimation = () => {
+    if (waveAnimationRef.current) {
+      clearInterval(waveAnimationRef.current);
+      waveAnimationRef.current = null;
+      
+      // Reset all values to minimum height
+      waveformValues.forEach((value) => {
+        Animated.timing(value, {
+          toValue: 5,
+          duration: 300,
+          useNativeDriver: false,
+        }).start();
+      });
+    }
   };
   
   // Map to store animation values for each recording item
@@ -435,7 +483,19 @@ const RecordingsScreen = () => {
             
             <View style={styles.recordingContent}>
               <View style={styles.waveformContainer}>
-                <View style={styles.waveform} />
+                {waveformValues.map((value, index) => (
+                  <Animated.View 
+                    key={index}
+                    style={[
+                      styles.waveBar,
+                      {
+                        height: value,
+                        backgroundColor: `rgba(52, 152, 219, ${0.5 + (index % 3) * 0.15})`,
+                        marginHorizontal: 2
+                      }
+                    ]}
+                  />
+                ))}
               </View>
               
               <Text style={styles.recordingTime}>
@@ -522,12 +582,13 @@ const styles = StyleSheet.create({
     height: 100,
     justifyContent: 'center',
     alignItems: 'center',
+    flexDirection: 'row',
+    paddingHorizontal: 10,
   },
-  waveform: {
-    width: '100%',
-    height: 60,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 10,
+  waveBar: {
+    width: 4,
+    borderRadius: 2,
+    backgroundColor: '#3498db',
   },
   recordingTime: {
     fontSize: 48,
