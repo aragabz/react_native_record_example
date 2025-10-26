@@ -17,10 +17,13 @@ import Sound, {
   AudioEncoderAndroidType,
   AudioSourceAndroidType,
   AVEncoderAudioQualityIOSType,
-  AVEncodingOption,
-  RecordBackType,
-  PlayBackType,
+  OutputFormatAndroidType,
+  AVLinearPCMBitDepthKeyIOSType,
 } from 'react-native-nitro-sound';
+
+import { useAudioUpload } from '../hooks/useAudioUpload';
+import { AudioFile } from '../services/audioService';
+import AudioResponseSheet from '../components/AudioResponseSheet';
 
 interface RecordingItem {
   id: string;
@@ -29,35 +32,49 @@ interface RecordingItem {
   path: string;
   date: string;
   isPlaying?: boolean;
+  uploadStatus?: 'uploading' | 'uploaded' | 'failed' | null;
+  uploadProgress?: number;
+  uploadedUrl?: string;
 }
 
 const RecordingsScreen = () => {
   const [recordings, setRecordings] = useState<RecordingItem[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [currentRecordingPath, setCurrentRecordingPath] = useState<string | null>(null);
-  const [currentlyPlayingId, setCurrentlyPlayingId] = useState<string | null>(null);
-  const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
+  const [currentRecordingPath, setCurrentRecordingPath] = useState<
+    string | null
+  >(null);
+  const [currentlyPlayingId, setCurrentlyPlayingId] = useState<string | null>(
+    null,
+  );
+  const [recordingStartTime, setRecordingStartTime] = useState<number | null>(
+    null,
+  );
   const [isRecordingSheetVisible, setIsRecordingSheetVisible] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState('00:00');
-  
+  const [responseAudioPath, setResponseAudioPath] = useState<string | null>(null);
+  const [showResponseSheet, setShowResponseSheet] = useState(false);
+
+  // Audio upload hook
+  const { uploadAudio } = useAudioUpload();
+
   // Animation values
   const buttonScale = useRef(new Animated.Value(1)).current;
   const buttonRotation = useRef(new Animated.Value(0)).current;
   const sheetAnimation = useRef(new Animated.Value(0)).current;
-  
+
   // Waveform animation values
   const waveformValues = useRef(
-    Array.from({ length: 30 }, () => new Animated.Value(0))
+    Array.from({ length: 30 }, () => new Animated.Value(0)),
   ).current;
-  
+
   // Timer reference
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const waveAnimationRef = useRef<NodeJS.Timeout | null>(null);
-  
+
   // Get screen dimensions
   const { height } = Dimensions.get('window');
-  
+
   // Request recording permissions
   const requestPermissions = async () => {
     if (Platform.OS === 'android') {
@@ -66,14 +83,19 @@ const RecordingsScreen = () => {
           PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
           PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
         ]);
-        
+
         if (
-          grants['android.permission.RECORD_AUDIO'] === PermissionsAndroid.RESULTS.GRANTED &&
-          grants['android.permission.WRITE_EXTERNAL_STORAGE'] === PermissionsAndroid.RESULTS.GRANTED
+          grants['android.permission.RECORD_AUDIO'] ===
+            PermissionsAndroid.RESULTS.GRANTED &&
+          grants['android.permission.WRITE_EXTERNAL_STORAGE'] ===
+            PermissionsAndroid.RESULTS.GRANTED
         ) {
           return true;
         } else {
-          Alert.alert('Permissions Required', 'Audio recording permissions are required');
+          Alert.alert(
+            'Permissions Required',
+            'Audio recording permissions are required',
+          );
           return false;
         }
       } catch (err) {
@@ -83,7 +105,7 @@ const RecordingsScreen = () => {
     }
     return true; // iOS handles permissions through Info.plist
   };
-  
+
   // Show recording sheet
   const showRecordingSheet = () => {
     setIsRecordingSheetVisible(true);
@@ -93,7 +115,7 @@ const RecordingsScreen = () => {
       useNativeDriver: true,
     }).start();
   };
-  
+
   // Hide recording sheet
   const hideRecordingSheet = () => {
     Animated.timing(sheetAnimation, {
@@ -104,54 +126,66 @@ const RecordingsScreen = () => {
       setIsRecordingSheetVisible(false);
     });
   };
-  
+
   // Start recording function
   const startRecording = async () => {
     const hasPermissions = await requestPermissions();
     if (!hasPermissions) return;
-    
+
     try {
       setIsLoading(true);
       const timestamp = Date.now();
       // Use the app's document directory which is writable
-      const recordingPath = Platform.OS === 'ios' 
-        ? `${RNFS.DocumentDirectoryPath}/recording_${timestamp}.m4a`
-        : `${RNFS.ExternalDirectoryPath}/recording_${timestamp}.m4a`;
-      
+      const recordingPath =
+        Platform.OS === 'ios'
+          ? `${RNFS.DocumentDirectoryPath}/recording_${timestamp}.wav`
+          : `${RNFS.ExternalDirectoryPath}/recording_${timestamp}.m4a`; // Android: use m4a as fallback
+
       console.log('Recording to path:', recordingPath);
-      
-      // Set up recording options
-      const audioSet = {
-        AudioEncoderAndroid: AudioEncoderAndroidType.AAC,
-        AudioSourceAndroid: AudioSourceAndroidType.MIC,
-        AVEncoderAudioQualityKeyIOS: AVEncoderAudioQualityIOSType.high,
-        AVNumberOfChannelsKeyIOS: 2,
-        // AVFormatIDKeyIOS: AVEncodingOption.aac,
-      };
-      
+
+      // Set up recording options - WAV for iOS, AAC for Android
+      const audioSet =
+        Platform.OS === 'ios'
+          ? {
+              // iOS: Use Linear PCM for true WAV format
+              AVFormatIDKeyIOS: 'lpcm' as const,
+              AVEncoderAudioQualityKeyIOS: AVEncoderAudioQualityIOSType.high,
+              AVNumberOfChannelsKeyIOS: 2,
+              AVSampleRateKeyIOS: 44100,
+              AVLinearPCMBitDepthKeyIOS: AVLinearPCMBitDepthKeyIOSType.bit16,
+              AVLinearPCMIsBigEndianKeyIOS: false,
+              AVLinearPCMIsFloatKeyIOS: false,
+            }
+          : {
+              // Android: Use AAC (no native WAV support)
+              AudioEncoderAndroid: AudioEncoderAndroidType.AAC,
+              AudioSourceAndroid: AudioSourceAndroidType.MIC,
+              OutputFormatAndroid: OutputFormatAndroidType.MPEG_4,
+            };
+
       // Start recording with options
       await Sound.startRecorder(recordingPath, audioSet);
       setIsRecording(true);
       setCurrentRecordingPath(recordingPath);
       setRecordingStartTime(Date.now());
       setRecordingDuration('00:00');
-      
+
       // Start timer to update duration
       if (timerRef.current) {
         clearInterval(timerRef.current);
       }
-      
+
       const startTime = Date.now();
       setRecordingStartTime(startTime);
-      
+
       timerRef.current = setInterval(() => {
         const duration = Date.now() - startTime;
         setRecordingDuration(formatTime(duration));
       }, 500);
-      
+
       // Show the recording sheet
       showRecordingSheet();
-      
+
       // Start animation
       startPulseAnimation();
     } catch (error) {
@@ -161,50 +195,125 @@ const RecordingsScreen = () => {
       setIsLoading(false);
     }
   };
-  
+
   // Helper function to format time in mm:ss
   const formatTime = (milliseconds: number): string => {
     const totalSeconds = Math.floor(milliseconds / 1000);
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
-    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    return `${minutes.toString().padStart(2, '0')}:${seconds
+      .toString()
+      .padStart(2, '0')}`;
+  };
+
+  // Upload recording to server
+  const uploadRecording = async (recording: RecordingItem) => {
+    try {
+      // Update recording status to uploading
+      setRecordings(prev =>
+        prev.map(r =>
+          r.id === recording.id
+            ? { ...r, uploadStatus: 'uploading', uploadProgress: 0 }
+            : r,
+        ),
+      );
+
+      // Get file stats for size
+      const fileStats = await RNFS.stat(recording.path);
+
+      // Create audio file object
+      // Determine file extension and type based on platform
+      const isWavFile =
+        Platform.OS === 'ios' && recording.path.endsWith('.wav');
+      const fileExtension = isWavFile ? 'wav' : 'm4a';
+      const mimeType = isWavFile ? 'audio/wav' : 'audio/m4a';
+
+      const audioFile: AudioFile = {
+        uri:
+          Platform.OS === 'ios' ? recording.path : `file://${recording.path}`,
+        name: `${recording.name.replace(/\s+/g, '_')}.${fileExtension}`,
+        type: mimeType,
+        size: fileStats.size,
+      };
+
+      // Upload with progress tracking
+      const uploadResult = await uploadAudio(audioFile);
+
+      // Update recording with upload success
+      setRecordings(prev =>
+        prev.map(r =>
+          r.id === recording.id
+            ? {
+                ...r,
+                uploadStatus: 'uploaded',
+                uploadProgress: 100,
+              }
+            : r,
+        ),
+      );
+
+      // Check if we received an audio response
+      if (uploadResult.audioPath) {
+        console.log('Audio response received:', uploadResult.audioPath);
+        setResponseAudioPath(uploadResult.audioPath);
+        setShowResponseSheet(true);
+      } else {
+        Alert.alert('Success', 'Recording uploaded successfully!');
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+
+      // Update recording with upload failure
+      setRecordings(prev =>
+        prev.map(r =>
+          r.id === recording.id
+            ? { ...r, uploadStatus: 'failed', uploadProgress: 0 }
+            : r,
+        ),
+      );
+
+      Alert.alert(
+        'Upload Failed',
+        'Failed to upload recording. You can try again later.',
+      );
+    }
   };
 
   // Stop recording function
   const stopRecording = async () => {
     if (!isRecording || !currentRecordingPath) return;
-    
+
     try {
       setIsLoading(true);
       const result = await Sound.stopRecorder();
       setIsRecording(false);
-      
+
       // Save the current duration before clearing the timer
       const finalDuration = recordingDuration;
-      
+
       // Clear the timer
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
-      
+
       // Stop waveform animation
       stopWaveformAnimation();
-      
+
       // Hide the recording sheet
       hideRecordingSheet();
-      
+
       // Stop animation
       Animated.timing(buttonScale, {
         toValue: 1,
         duration: 100,
         useNativeDriver: true,
       }).start();
-      
+
       // Use the saved duration value
       let duration = finalDuration;
       setRecordingStartTime(null);
-      
+
       // Add the recording to the list
       const newRecording: RecordingItem = {
         id: Date.now().toString(),
@@ -212,11 +321,30 @@ const RecordingsScreen = () => {
         duration: duration,
         path: currentRecordingPath,
         date: new Date().toLocaleString(),
-        isPlaying: false
+        isPlaying: false,
+        uploadStatus: null,
+        uploadProgress: 0,
       };
-      
-      setRecordings([...recordings, newRecording]);
+
+      const updatedRecordings = [...recordings, newRecording];
+      setRecordings(updatedRecordings);
       setCurrentRecordingPath(null);
+
+      // Show upload confirmation dialog
+      Alert.alert(
+        'Recording Saved',
+        'Would you like to upload this recording to the server?',
+        [
+          {
+            text: 'Later',
+            style: 'cancel',
+          },
+          {
+            text: 'Upload Now',
+            onPress: () => uploadRecording(newRecording),
+          },
+        ],
+      );
     } catch (error) {
       Alert.alert('Error', 'Failed to stop recording');
       console.error('Stop recording error:', error);
@@ -224,17 +352,17 @@ const RecordingsScreen = () => {
       setIsLoading(false);
     }
   };
-  
+
   // Play a recording
   const playRecording = async (item: RecordingItem) => {
     try {
       setIsLoading(true);
-      
+
       // If already playing, stop it
       if (currentlyPlayingId) {
         await Sound.stopPlayer();
         Sound.removePlayBackListener();
-        
+
         // If clicking the same item that's playing, just stop it
         if (currentlyPlayingId === item.id) {
           setCurrentlyPlayingId(null);
@@ -242,16 +370,16 @@ const RecordingsScreen = () => {
           return;
         }
       }
-      
+
       // Mark this item as playing
       setCurrentlyPlayingId(item.id);
-      
+
       await Sound.startPlayer(item.path);
-      
+
       // Set up player event listener
-      Sound.addPlayBackListener((e) => {
+      Sound.addPlayBackListener(e => {
         // Update duration in real-time if needed
-        
+
         if (e.currentPosition === e.duration) {
           Sound.stopPlayer();
           Sound.removePlayBackListener();
@@ -266,15 +394,15 @@ const RecordingsScreen = () => {
       setIsLoading(false);
     }
   };
-  
+
   // Animation for the recording button
   const startPulseAnimation = () => {
     // Stop any existing animation
     buttonScale.stopAnimation();
-    
+
     // Reset to initial value
     buttonScale.setValue(1);
-    
+
     Animated.loop(
       Animated.sequence([
         Animated.timing(buttonScale, {
@@ -287,29 +415,29 @@ const RecordingsScreen = () => {
           duration: 500,
           useNativeDriver: true,
         }),
-      ])
+      ]),
     ).start();
-    
+
     Animated.timing(buttonRotation, {
       toValue: 1,
       duration: 300,
       useNativeDriver: true,
     }).start();
-    
+
     // Animate waveform bars
     animateWaveform();
   };
-  
+
   // Animate waveform bars
   const animateWaveform = () => {
     // Clear any existing animation
     if (waveAnimationRef.current) {
       clearInterval(waveAnimationRef.current);
     }
-    
+
     // Animate each bar with random heights
     waveAnimationRef.current = setInterval(() => {
-      waveformValues.forEach((value) => {
+      waveformValues.forEach(value => {
         Animated.timing(value, {
           toValue: Math.random() * 40 + 5,
           duration: 300,
@@ -318,15 +446,15 @@ const RecordingsScreen = () => {
       });
     }, 300);
   };
-  
+
   // Stop waveform animation
   const stopWaveformAnimation = () => {
     if (waveAnimationRef.current) {
       clearInterval(waveAnimationRef.current);
       waveAnimationRef.current = null;
-      
+
       // Reset all values to minimum height
-      waveformValues.forEach((value) => {
+      waveformValues.forEach(value => {
         Animated.timing(value, {
           toValue: 5,
           duration: 300,
@@ -335,10 +463,12 @@ const RecordingsScreen = () => {
       });
     }
   };
-  
+
   // Map to store animation values for each recording item
-  const playButtonScales = useRef<{[key: string]: Animated.Value}>({}).current;
-  
+  const playButtonScales = useRef<{ [key: string]: Animated.Value }>(
+    {},
+  ).current;
+
   // Function to get or create an animation value for an item
   const getPlayButtonScale = (id: string) => {
     if (!playButtonScales[id]) {
@@ -346,7 +476,7 @@ const RecordingsScreen = () => {
     }
     return playButtonScales[id];
   };
-  
+
   // Handle animation for playing items
   useEffect(() => {
     // Stop all animations first
@@ -354,7 +484,7 @@ const RecordingsScreen = () => {
       playButtonScales[id].stopAnimation();
       playButtonScales[id].setValue(1);
     });
-    
+
     // Start animation for the currently playing item
     if (currentlyPlayingId) {
       const playingScale = playButtonScales[currentlyPlayingId];
@@ -371,39 +501,74 @@ const RecordingsScreen = () => {
               duration: 600,
               useNativeDriver: true,
             }),
-          ])
+          ]),
         ).start();
       }
     }
   }, [currentlyPlayingId]);
-  
+
   // Render each recording item
   const renderItem = ({ item }: { item: RecordingItem }) => {
     // Get the animation value for this item
     const playButtonScale = getPlayButtonScale(item.id);
-    
+
     return (
       <View style={styles.recordingItem}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.recordingInfo}
           onPress={() => playRecording(item)}
         >
           <Text style={styles.recordingName}>{item.name}</Text>
           <Text style={styles.recordingDate}>{item.date}</Text>
+
+          {/* Upload status */}
+          {item.uploadStatus && (
+            <View style={styles.uploadStatusContainer}>
+              {item.uploadStatus === 'uploading' && (
+                <Text style={styles.uploadStatusText}>
+                  Uploading... {item.uploadProgress || 0}%
+                </Text>
+              )}
+              {item.uploadStatus === 'uploaded' && (
+                <Text style={[styles.uploadStatusText, styles.uploadSuccess]}>
+                  ✅ Uploaded
+                </Text>
+              )}
+              {item.uploadStatus === 'failed' && (
+                <Text style={[styles.uploadStatusText, styles.uploadFailed]}>
+                  ❌ Upload failed
+                </Text>
+              )}
+            </View>
+          )}
         </TouchableOpacity>
-        
+
         <View style={styles.rightContainer}>
           <Text style={styles.recordingDuration}>{item.duration}</Text>
-          
-          <TouchableOpacity 
+
+          {/* Upload button */}
+          {(!item.uploadStatus || item.uploadStatus === 'failed') && (
+            <TouchableOpacity
+              style={styles.uploadButton}
+              onPress={() => uploadRecording(item)}
+            >
+              <Text style={styles.uploadButtonIcon}>⬆</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
             style={styles.playButton}
             onPress={() => playRecording(item)}
           >
-            <Animated.View style={[
-              styles.playButtonInner, 
-              { transform: [{ scale: playButtonScale }] },
-              currentlyPlayingId === item.id ? styles.playButtonPlaying : null
-            ]}>
+            <Animated.View
+              style={[
+                styles.playButtonInner,
+                { transform: [{ scale: playButtonScale }] },
+                currentlyPlayingId === item.id
+                  ? styles.playButtonPlaying
+                  : null,
+              ]}
+            >
               <Text style={styles.playButtonIcon}>
                 {currentlyPlayingId === item.id ? '■' : '▶'}
               </Text>
@@ -413,13 +578,13 @@ const RecordingsScreen = () => {
       </View>
     );
   };
-  
+
   // Calculate rotation for the FAB
   const rotation = buttonRotation.interpolate({
     inputRange: [0, 1],
     outputRange: ['0deg', '45deg'],
   });
-  
+
   // Calculate sheet translation based on animation value
   const sheetTranslateY = sheetAnimation.interpolate({
     inputRange: [0, 1],
@@ -429,36 +594,38 @@ const RecordingsScreen = () => {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Recordings</Text>
-      
+
       {isLoading && !isRecording && (
         <View style={styles.loadingOverlay}>
           <Text style={styles.loadingText}>Processing...</Text>
         </View>
       )}
-      
+
       {recordings.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyText}>No recordings yet</Text>
-          <Text style={styles.emptySubText}>Tap the button below to start recording</Text>
+          <Text style={styles.emptySubText}>
+            Tap the button below to start recording
+          </Text>
         </View>
       ) : (
         <FlatList
           data={recordings}
           renderItem={renderItem}
-          keyExtractor={(item) => item.id}
+          keyExtractor={item => item.id}
           contentContainerStyle={styles.listContainer}
         />
       )}
-      
-      <Animated.View 
+
+      <Animated.View
         style={[
-          styles.fabContainer, 
-          { 
+          styles.fabContainer,
+          {
             transform: [
               { scale: buttonScale },
-              { rotate: isRecording ? rotation : '0deg' }
-            ] 
-          }
+              { rotate: isRecording ? rotation : '0deg' },
+            ],
+          },
         ]}
       >
         <TouchableOpacity
@@ -469,41 +636,41 @@ const RecordingsScreen = () => {
           <View style={isRecording ? styles.stopIcon : styles.recordIcon} />
         </TouchableOpacity>
       </Animated.View>
-      
+
       {/* Recording Sheet */}
       {isRecordingSheetVisible && (
         <View style={styles.sheetOverlay}>
-          <Animated.View 
+          <Animated.View
             style={[
               styles.recordingSheet,
-              { transform: [{ translateY: sheetTranslateY }] }
+              { transform: [{ translateY: sheetTranslateY }] },
             ]}
           >
             <View style={styles.sheetHandle} />
-            
+
             <View style={styles.recordingContent}>
               <View style={styles.waveformContainer}>
                 {waveformValues.map((value, index) => (
-                  <Animated.View 
+                  <Animated.View
                     key={index}
                     style={[
                       styles.waveBar,
                       {
                         height: value,
-                        backgroundColor: `rgba(52, 152, 219, ${0.5 + (index % 3) * 0.15})`,
-                        marginHorizontal: 2
-                      }
+                        backgroundColor: `rgba(52, 152, 219, ${
+                          0.5 + (index % 3) * 0.15
+                        })`,
+                        marginHorizontal: 2,
+                      },
                     ]}
                   />
                 ))}
               </View>
-              
-              <Text style={styles.recordingTime}>
-                {recordingDuration}
-              </Text>
-              
+
+              <Text style={styles.recordingTime}>{recordingDuration}</Text>
+
               <View style={styles.recordingControls}>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={styles.stopRecordingButton}
                   onPress={stopRecording}
                 >
@@ -514,6 +681,16 @@ const RecordingsScreen = () => {
           </Animated.View>
         </View>
       )}
+
+      {/* Audio Response Sheet */}
+      <AudioResponseSheet
+        visible={showResponseSheet}
+        audioPath={responseAudioPath}
+        onClose={() => {
+          setShowResponseSheet(false);
+          setResponseAudioPath(null);
+        }}
+      />
     </View>
   );
 };
@@ -673,6 +850,33 @@ const styles = StyleSheet.create({
   playButtonIcon: {
     color: 'white',
     fontSize: 14,
+    fontWeight: 'bold',
+  },
+  uploadStatusContainer: {
+    marginTop: 4,
+  },
+  uploadStatusText: {
+    fontSize: 12,
+    color: '#666',
+  },
+  uploadSuccess: {
+    color: '#28a745',
+  },
+  uploadFailed: {
+    color: '#dc3545',
+  },
+  uploadButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#007bff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  uploadButtonIcon: {
+    color: 'white',
+    fontSize: 16,
     fontWeight: 'bold',
   },
   emptyContainer: {
